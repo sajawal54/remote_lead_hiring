@@ -17,10 +17,6 @@ class SearchCriteria(BaseModel):
 
 @router.post("/workflows", status_code=201)
 def create_workflow(criteria: SearchCriteria, db: Session = Depends(get_db)):
-    """
-    POST /workflows: User ki search criteria accept karta hai, 
-    database mein workflow record create karta hai aur execution ID return karta hai.
-    """
     # 1. Pehle ensure karein ke mock workspace database mein mojood ho (Tenant isolation check)
     workspace_id = "ws_mock_tenant_a"
     workspace = db.query(WorkSpaceModel).filter(WorkSpaceModel.workspace_id == workspace_id).first()

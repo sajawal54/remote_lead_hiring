@@ -35,3 +35,13 @@ class JobLeadModel(Base):
   total_score = Column(Integer , nullable=False)
   last_verified_at = Column(DateTime(timezone=True) , server_default=func.now())
   sources_count = Column(Integer , default=1)
+  
+class RawSourceRecordModel(Base):
+  __tablename__ = "raw_source_records"
+  
+  record_id = Column(String , primary_key=True , index=True)
+  workspace_id = Column(String , ForeignKey("workspaces.workspace_id") , nullable=False)
+  source_name = Column(String , nullable=False)
+  raw_payload = Column(JSON , nullable= False)
+  fetched_at = Column(DateTime(timezone=True) , server_default=func.now())
+  
