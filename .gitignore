@@ -4,4 +4,4 @@ __pycache__/
 .env
 .DS_Store
 .vscode/
-remote_hiring.db
+.remote_hiring
