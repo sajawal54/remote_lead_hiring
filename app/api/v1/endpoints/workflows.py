@@ -40,9 +40,13 @@ def create_workflow(criteria: SearchCriteria, db: Session = Depends(get_db)):
         stage="source_selection",
         criteria=criteria.dict()
     )
-    db.add(db_workflow)
-    db.commit()
-    db.refresh(db_workflow)
+    try:
+        db.add(db_workflow)
+        db.commit()
+        db.refresh(db_workflow)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400 , detail=f"Database error : {str(e)}")
 
     return {
         "workflow_id": db_workflow.workflow_id,
