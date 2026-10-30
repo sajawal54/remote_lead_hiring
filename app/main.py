@@ -2,8 +2,6 @@ from fastapi import FastAPI , Request
 from fastapi.responses import JSONResponse
 from app.api.v1.api import api_router
 from app.core.database import engine, Base
-from app.models.models import WorkSpaceModel, WorkFlowExecutionModel, JobLeadModel
-
 
 Base.metadata.create_all(bind=engine)
 
@@ -27,4 +25,4 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.get("/")
 def root():
-    return {"message": "Remote Hiring Lead Intelligence API active hai", "status": "running"}
+    return {"message": "Remote Hiring Lead Intelligence API is active", "status": "running"}

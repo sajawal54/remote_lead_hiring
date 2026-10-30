@@ -57,9 +57,6 @@ def create_workflow(criteria: SearchCriteria, db: Session = Depends(get_db)):
 
 @router.get("/workflows/{workflow_id}")
 def get_workflow_status(workflow_id: str, db: Session = Depends(get_db)):
-    """
-    GET /workflows/{id}: Database se workflow ka current state fetch karta hai.
-    """
     workflow = db.query(WorkFlowExecutionModel).filter(WorkFlowExecutionModel.workflow_id == workflow_id).first()
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow execution not found")
@@ -69,4 +66,4 @@ def get_workflow_status(workflow_id: str, db: Session = Depends(get_db)):
         "status": workflow.status,
         "stage": workflow.stage,
         "created_at": workflow.created_at
-    }
+    }   

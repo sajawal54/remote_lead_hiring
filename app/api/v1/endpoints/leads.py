@@ -18,7 +18,6 @@ def get_leads(
     query = db.query(JobLeadModel).filter(JobLeadModel.total_score >= min_score)
     leads = query.all()
     
-    # Agar database khali hai toh ek sample lead inject kar sakte hain testing ke liye
     if not leads:
         return []
         
