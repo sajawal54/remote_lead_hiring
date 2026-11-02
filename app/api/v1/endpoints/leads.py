@@ -5,7 +5,7 @@ from app.core.database import get_db
 from app.models.models import JobLeadModel
 
 router = APIRouter()
-
+# get all leads with optional minimum score filter
 @router.get("/")
 def get_leads(
     min_score: Optional[int] = Query(None, description="Minimum score filter (e.g. 70)"),
@@ -27,7 +27,7 @@ def get_leads(
         "count": len(leads),
         "leads": leads
     }
-
+# get the details of a specific job lead by its job_id
 @router.get("/{job_id}")
 def get_job_lead_detail(job_id: str, db: Session = Depends(get_db)):
     """
@@ -41,3 +41,4 @@ def get_job_lead_detail(job_id: str, db: Session = Depends(get_db)):
         "status": "success",
         "lead": lead
     }
+    
