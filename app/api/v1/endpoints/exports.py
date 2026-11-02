@@ -1,26 +1,53 @@
-from fastapi import APIRouter
-from pydantic import BaseModel
-from typing import List , Optional
+import csv
+import io
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
+from app.core.database import get_db
+from app.models.models import JobLeadModel
 
 router = APIRouter()
 
-class ExportRequest(BaseModel):
-  min_score: int = 80
-  lead_ids : Optional[List[str]] = None
-  format : str = "csv"
-  
-@router.post("/exports" , status_code=202)
-def create_export(request: ExportRequest):
-  return {
-    "export_id": "exp_12345",
-    "status": "processing",
-    "record_count" : 1,
-  }
-  
-@router.get("/exports/{export_id}/download")
-def download_export(export_id : str):
-  return {
-    "export_id" : export_id,
-    "download_url" : f"https://api.example.com/downloads/{export_id}.csv",
-    "expires_in_seconds" : 3600
-  }
+@router.get("/csv")
+def export_leads_to_csv(db: Session = Depends(get_db)):
+    """
+    Database se saari leads fetch karta hai (score ke hisaab se sorted) 
+    aur ek download-able CSV file generate karta hai.
+    """
+    try:
+        # High score wali leads pehle aayengi
+        leads = db.query(JobLeadModel).order_by(JobLeadModel.total_score.desc()).all()
+        
+        if not leads:
+            raise HTTPException(status_code=404, detail="Export ke liye koi job leads mojood nahi hain.")
+
+        # In-memory text buffer banate hain CSV data ke liye
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # CSV Header row
+        writer.writerow(["Job ID", "Company", "Title", "Remote Policy", "Total Score", "Technologies"])
+
+        # Data rows write karna
+        for lead in leads:
+            techs = ", ".join(lead.technologies) if lead.technologies else ""
+            writer.writerow([
+                lead.job_id,
+                lead.company_name,
+                lead.title,
+                lead.remote_policy,
+                lead.total_score,
+                techs
+            ])
+
+        output.seek(0)
+        
+        # StreamingResponse ke zariye file download karana
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=remote_job_leads_export.csv"}
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")

@@ -6,25 +6,26 @@ from app.models.models import JobLeadModel
 
 router = APIRouter()
 
-@router.get("/leads")
+@router.get("/")
 def get_leads(
-    min_score: int = Query(80, description="Minimum lead score filter"),
-    tech: Optional[str] = Query(None, description="Filter by technology"),
+    min_score: Optional[int] = Query(None, description="Minimum score filter (e.g. 70)"),
     db: Session = Depends(get_db)
 ):
-   
-    query = db.query(JobLeadModel).filter(JobLeadModel.total_score >= min_score)
-    leads = query.all()
+    """
+    Database se leads fetch karta hai. Agar min_score doge toh sirf usse upar wali jobs aayengi.
+    """
+    query = db.query(JobLeadModel)
     
-    if not leads:
-        return []
+    if min_score is not None:
+        query = query.filter(JobLeadModel.total_score >= min_score)
         
+    leads = query.order_by(JobLeadModel.total_score.desc()).all()
+    
     return {
         "status": "success",
         "count": len(leads),
         "leads": leads
     }
-
 @router.get("/leads/{job_id}")
 def get_lead_detail(job_id: str, db: Session = Depends(get_db)):
     
