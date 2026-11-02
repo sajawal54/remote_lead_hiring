@@ -19,7 +19,11 @@ def get_leads(
     if not leads:
         return []
         
-    return leads
+    return {
+        "status": "success",
+        "count": len(leads),
+        "leads": leads
+    }
 
 @router.get("/leads/{job_id}")
 def get_lead_detail(job_id: str, db: Session = Depends(get_db)):
