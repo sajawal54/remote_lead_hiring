@@ -11,7 +11,7 @@ load_dotenv()
 
 # JWT_SECRET_KEY must be configured; do not silently sign tokens with a public fallback.
 SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-if not SECRET_KEY:
+if not SECRET_KEY:          
     raise RuntimeError("JWT_SECRET_KEY must be set in the environment.")
 
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")

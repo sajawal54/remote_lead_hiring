@@ -1,21 +1,8 @@
 import uuid
 from datetime import datetime, timezone
-
-from sqlalchemy import (
-    Column,
-    DateTime,
-    Float,
-    ForeignKey,
-    Integer,
-    JSON,
-    String,
-    Text,
-    UniqueConstraint,
-)
+from sqlalchemy import (Column,DateTime,Float,ForeignKey,Integer,JSON,String,Text,UniqueConstraint)
 from sqlalchemy.orm import relationship, synonym
-
 from app.core.database import Base
-
 
 class WorkspaceModel(Base):
     __tablename__ = "workspaces"
