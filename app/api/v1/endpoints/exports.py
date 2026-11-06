@@ -3,51 +3,73 @@ import io
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from typing import Optional
 from app.core.database import get_db
+from app.core.security import verify_access_token
 from app.models.models import JobLeadModel
 
-router = APIRouter()
+router = APIRouter(prefix="/exports", tags=["Exports"])
 
-@router.get("/csv")
-def export_leads_to_csv(db: Session = Depends(get_db)):
+@router.post("")
+def create_export(
+    payload: Optional[dict] = None,
+    current_user: dict = Depends(verify_access_token),
+    db: Session = Depends(get_db)
+):
     """
-    Database se saari leads fetch karta hai (score ke hisaab se sorted) 
-    aur ek download-able CSV file generate karta hai.
+    Generates scoped CSV export artifact of qualified leads from the database.
+    PDF Section 15: POST /exports
     """
-    try:
-        # High score wali leads pehle aayengi
-        leads = db.query(JobLeadModel).order_by(JobLeadModel.total_score.desc()).all()
-        
-        if not leads:
-            raise HTTPException(status_code=404, detail="Export ke liye koi job leads mojood nahi hain.")
+    # Fetch qualified leads for this workspace from database
+    workspace_id = current_user["workspace_id"]
+    leads = [
+        lead
+        for lead in db.query(JobLeadModel).filter(
+            JobLeadModel.workspace_id == workspace_id
+        ).all()
+        if lead.passed_threshold
+    ]
 
-        # In-memory text buffer banate hain CSV data ke liye
-        output = io.StringIO()
-        writer = csv.writer(output)
+    if not leads:
+        raise HTTPException(status_code=404, detail="No qualified leads found to export for this workspace.")
 
-        # CSV Header row
-        writer.writerow(["Job ID", "Company", "Title", "Remote Policy", "Total Score", "Technologies"])
+    # Create CSV in memory
+    output = io.StringIO()
+    writer = csv.writer(output)
 
-        # Data rows write karna
-        for lead in leads:
-            techs = ", ".join(lead.technologies) if lead.technologies else ""
-            writer.writerow([
-                lead.job_id,
-                lead.company_name,
-                lead.title,
-                lead.remote_policy,
-                lead.total_score,
-                techs
-            ])
+    # Write CSV Header
+    writer.writerow(["Lead ID", "Job Title", "Location", "Remote Policy", "Score", "Verified At"])
 
-        output.seek(0)
-        
-        # StreamingResponse ke zariye file download karana
-        return StreamingResponse(
-            iter([output.getvalue()]),
-            media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=remote_job_leads_export.csv"}
-        )
+    # Write Data Rows
+    for lead in leads:
+        writer.writerow([
+            lead.id,
+            lead.title,
+            lead.location,
+            lead.remote_policy,
+            lead.score,
+            lead.verified_at
+        ])
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+    output.seek(0)
+
+    # Return as direct downloadable CSV stream response
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=qualified_leads_{workspace_id}.csv"}
+    )
+
+@router.get("/{export_id}/download")
+def download_export(
+    export_id: str,
+    current_user: dict = Depends(verify_access_token),
+):
+    """
+    Permission and expiry checked download gateway.
+    PDF Section 15: GET /exports/{id}/download
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="Export artifacts are not stored yet. Download the CSV returned by POST /exports instead.",
+    )

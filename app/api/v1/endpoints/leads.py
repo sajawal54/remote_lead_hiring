@@ -1,44 +1,69 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
+from app.core.security import verify_access_token
 from app.models.models import JobLeadModel
 
-router = APIRouter()
-# get all leads with optional minimum score filter
-@router.get("/")
-def get_leads(
-    min_score: Optional[int] = Query(None, description="Minimum score filter (e.g. 70)"),
+router = APIRouter(prefix="/leads", tags=["Job Leads"])
+
+@router.get("")
+def get_workspace_leads(
+    current_user: dict = Depends(verify_access_token),
     db: Session = Depends(get_db)
 ):
     """
-    Database se leads fetch karta hai. Agar min_score doge toh sirf usse upar wali jobs aayengi.
-    Scores descending order (high score first) mein sorted hongi.
+    Retrieves all processed and scored job leads for the authenticated workspace.
+    PDF Section 8 & 9 (Lead Delivery & Intelligence).
     """
-    query = db.query(JobLeadModel)
-    
-    if min_score is not None:
-        query = query.filter(JobLeadModel.total_score >= min_score)
-        
-    leads = query.order_by(JobLeadModel.total_score.desc()).all()
-    
+    leads = db.query(JobLeadModel).filter(
+        JobLeadModel.workspace_id == current_user["workspace_id"]
+    ).all()
+
     return {
         "status": "success",
-        "count": len(leads),
-        "leads": leads
+        "workspace_id": current_user["workspace_id"],
+        "total_leads": len(leads),
+        "leads": [
+            {
+                "id": lead.id,
+                "title": lead.title,
+                "location": lead.location,
+                "remote_policy": lead.remote_policy,
+                "score": lead.score,
+                "passed_threshold": lead.passed_threshold,
+                "posted_at": lead.posted_at
+            }
+            for lead in leads
+        ]
     }
-# get the details of a specific job lead by its job_id
-@router.get("/{job_id}")
-def get_job_lead_detail(job_id: str, db: Session = Depends(get_db)):
+
+@router.get("/{lead_id}")
+def get_lead_detail(
+    lead_id: str,
+    current_user: dict = Depends(verify_access_token),
+    db: Session = Depends(get_db)
+):
     """
-    Ek specific job lead ki poori details fetch karta hai uske Job ID ke zariye.
+    Retrieves full details and score breakdown for a specific job lead.
     """
-    lead = db.query(JobLeadModel).filter(JobLeadModel.job_id == job_id).first()
+    lead = db.query(JobLeadModel).filter(
+        JobLeadModel.job_id == lead_id,
+        JobLeadModel.workspace_id == current_user["workspace_id"]
+    ).first()
+
     if not lead:
-        raise HTTPException(status_code=404, detail="Yeh job lead database mein nahi mili.")
-    
+        raise HTTPException(status_code=404, detail="Job lead not found.")
+
     return {
         "status": "success",
-        "lead": lead
+        "lead": {
+            "id": lead.id,
+            "title": lead.title,
+            "description": lead.description,
+            "location": lead.location,
+            "remote_policy": lead.remote_policy,
+            "score": lead.score,
+            "passed_threshold": lead.passed_threshold,
+            "verified_at": lead.verified_at
+        }
     }
-    

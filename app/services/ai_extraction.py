@@ -11,9 +11,13 @@ class ExtractedJobAttributes(BaseModel):
     seniority: str = Field(description="Seniority level e.g. Senior, Mid, Junior, Lead")
     remote_type: str = Field(description="Remote policy type e.g. fully-remote, hybrid, on-site")
     allowed_countries: List[str] = Field(description="Countries or regions where remote work is permitted, e.g. Global, US, Pakistan")
-    confidence: float = Field(description="Confidence score between 0.0 and 1.0 regarding the accuracy of extracted data")
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Confidence score between 0.0 and 1.0 regarding the accuracy of extracted data",
+    )
 
-def extract_job_attributes_with_llm(job_description: str) -> dict:
+def extract_job_details_with_gemini(job_description: str) -> dict:
     """
     Calls Google Gemini API with structured output schema to extract 
     job attributes as specified in PDF Section 4.7 & 8.
@@ -48,8 +52,7 @@ def extract_job_attributes_with_llm(job_description: str) -> dict:
         )
 
         # Parse the structured response back into dictionary
-        import json
-        extracted_data = json.loads(response.text)
+        extracted_data = ExtractedJobAttributes.model_validate_json(response.text).model_dump()
 
         return {
             "status": "success",

@@ -1,35 +1,65 @@
+import uuid
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from app.models.models import RawSourceRecordModel
-import uuid
+
+# Pre-approved source registry according to policy (Section 4.2)
+APPROVED_SOURCES = {
+    "job_board_api": {"permitted": True, "rate_limit": 100},
+    "career_page_feed": {"permitted": True, "rate_limit": 50},
+    "remoteok_live_api": {"permitted": True, "rate_limit": 100},
+    "csv_upload": {"permitted": True, "rate_limit": 0},
+    "unlicensed_scraper": {"permitted": False, "rate_limit": 0}
+}
+
+def verify_source_eligibility(source_name: str) -> dict:
+    """
+    Checks if a source is permitted and licensed under workspace policy.
+    PDF Section 4.2 (Source eligibility and planning)
+    """
+    source_info = APPROVED_SOURCES.get(source_name.lower(), {"permitted": False})
+    if not source_info.get("permitted"):
+        return {
+            "eligible": False,
+            "reason": f"Source '{source_name}' is not permitted or lacks license approval."
+        }
+    return {
+        "eligible": True,
+        "reason": f"Source '{source_name}' verified and eligible for ingestion."
+    }
 
 
-def normalize_and_save_lead(workspace_id: str ,source_name: str , raw_payload: dict , db: Session):
-  record_id = "raw_" + str(uuid.uuid4())[:8]
-  raw_record = RawSourceRecordModel(
-    record_id=record_id,
-    workspace_id = workspace_id,
-    source_name = source_name,
-    raw_payload=raw_payload
-  )
-  db.add(raw_record)
-  db.commit()
+def ingest_raw_source_record(db: Session, workspace_id: str, source_name: str, raw_payload: dict, source_url: str = None) -> dict:
+    """
+    Fetches and stores raw source evidence, source URL, and timestamp.
+    PDF Section 4.3 (Ingestion and raw evidence)
+    """
+    # 1. Eligibility Check
+    eligibility = verify_source_eligibility(source_name)
+    if not eligibility["eligible"]:
+        return {
+            "status": "blocked",
+            "message": eligibility["reason"]
+        }
 
-  
-  technologies = [tech.strip().lower() for tech in raw_payload.get("technologies" , [])]
-  remote_policy = raw_payload.get("remote_policy" , "remote").lower()
-  
-  normalize_data = {
-    "job_id": "job_" + str(uuid.uuid4())[:8],
-    "workspace_id": workspace_id,
-    "company_name": raw_payload.get("company_name" , "Unknown_company").strip(),
-    "title": raw_payload.get("title" , "Untitled Role").strip(),
-    "location": raw_payload.get("location" , "Remote").strip(),
-    "remote_policy" : remote_policy,
-    "allowed_countries": raw_payload.get("allowed_countries" , ["Global"]),
-    "technologies" : technologies,
-    "salary": raw_payload.get("salary" , {"min":0 , "max":0 , "currency":"USD" , "period":"yearly"}),
-    "score_breakdown": {},
-    "total_score":0
-  }
-  
-  return normalize_data
+    # 2. Capture Raw Record with Provenance
+    record_id = "raw_" + str(uuid.uuid4())[:8]
+    raw_record = RawSourceRecordModel(
+        record_id=record_id,
+        workspace_id=workspace_id,
+        source_name=source_name,
+        raw_payload=raw_payload,
+        source_url=source_url,
+        fetched_at=datetime.now(timezone.utc)
+    )
+
+    db.add(raw_record)
+    db.commit()
+    db.refresh(raw_record)
+
+    return {
+        "status": "ingested",
+        "record_id": raw_record.record_id,
+        "source_name": source_name,
+        "message": "Raw source evidence successfully ingested and persisted."
+    }

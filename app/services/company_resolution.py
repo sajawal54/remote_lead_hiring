@@ -1,51 +1,67 @@
 import uuid
+
+from sqlalchemy import func
 from sqlalchemy.orm import Session
+
 from app.models.models import CompanyModel, JobLeadModel
 
-def resolve_and_associate_company(db: Session, workspace_id: str, job_id: str, normalized_company_name: str, domain: str = None):
-    """
-    Matches company by validated domain and aliases, associates related jobs,
-    and records resolution evidence as specified in PDF Section 4.6[cite: 4, 5].
-    """
-    clean_name = normalized_company_name.strip() if normalized_company_name else "Unknown Company"
-    
-    # 1. Match by domain or normalized name within workspace scope
+
+def resolve_and_associate_company(
+    db: Session,
+    workspace_id: str,
+    job_id: str,
+    normalized_company_name: str,
+    domain: str = None,
+) -> dict:
+    clean_name = normalized_company_name.strip() if normalized_company_name else ""
+    clean_domain = domain.strip().lower() if domain else None
     company = None
-    if domain:
+
+    if clean_domain:
         company = db.query(CompanyModel).filter(
             CompanyModel.workspace_id == workspace_id,
-            CompanyModel.domain == domain
+            func.lower(CompanyModel.domain) == clean_domain,
         ).first()
-        
-    if not company and clean_name != "Unknown Company":
+
+    if not company and clean_name and clean_name.casefold() != "unknown company":
         company = db.query(CompanyModel).filter(
             CompanyModel.workspace_id == workspace_id,
-            CompanyModel.name == clean_name
+            func.lower(CompanyModel.normalized_name) == clean_name.lower(),
         ).first()
-        
-    # 2. Decision rule: Unresolved company -> mark unknown rather than guess domain[cite: 4, 5]
-    if not company:
-        company_id = "comp_" + str(uuid.uuid4())[:8]
+
+    if not company and clean_name and clean_name.casefold() != "unknown company":
         company = CompanyModel(
-            company_id=company_id,
+            id="comp_" + str(uuid.uuid4())[:8],
             workspace_id=workspace_id,
-            name=clean_name,
-            domain=domain if domain else "unknown-domain.com"
+            normalized_name=clean_name,
+            domain=clean_domain,
+            resolution_status="resolved" if clean_domain else "unresolved",
         )
         db.add(company)
-        db.commit()
-        db.refresh(company)
-        
-    # 3. Associate job-company relationship (PDF Section 7 schema)[cite: 7]
-    job_lead = db.query(JobLeadModel).filter(JobLeadModel.job_id == job_id).first()
-    if job_lead:
-        job_lead.company_id = company.company_id
-        db.commit()
-        
+        db.flush()
+
+    job_lead = db.query(JobLeadModel).filter(
+        JobLeadModel.job_id == job_id,
+        JobLeadModel.workspace_id == workspace_id,
+    ).first()
+    if job_lead and company:
+        job_lead.company_id = company.id
+
+    db.commit()
+
+    if not company:
+        return {
+            "status": "unresolved",
+            "company_id": None,
+            "company_name": "Unknown Company",
+            "domain": None,
+            "message": "Company identity could not be resolved from the supplied data.",
+        }
+
     return {
         "status": "success",
-        "company_id": company.company_id,
-        "company_name": company.name,
+        "company_id": company.id,
+        "company_name": company.normalized_name,
         "domain": company.domain,
-        "message": "Company identity successfully resolved and linked to job lead."
+        "message": "Company identity successfully resolved and linked to the job lead.",
     }
