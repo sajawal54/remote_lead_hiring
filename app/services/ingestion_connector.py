@@ -3,6 +3,7 @@ import hashlib
 import io
 import httpx
 import uuid
+import time
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from app.models.models import RawSourceRecordModel
@@ -21,6 +22,8 @@ def ingest_csv_upload(db: Session, workspace_id: str, file_content: bytes, sourc
         # Decode bytes to string stream
         decoded_file = file_content.decode("utf-8")
         reader = csv.DictReader(io.StringIO(decoded_file))
+        if not reader.fieldnames or not any(field.strip() for field in reader.fieldnames if field):
+            return {"status": "error", "message": "CSV file must include a header row."}
         
         imported_count = 0
         record_ids = []
@@ -59,6 +62,9 @@ def ingest_api_feed(db: Session, workspace_id: str, source_name: str, api_payloa
     Ingests external API payloads into raw source records.
     PDF Section 4.3 (API Feed Ingestion).
     """
+    if not isinstance(api_payloads, list) or not all(isinstance(item, dict) for item in api_payloads):
+        return {"status": "error", "message": "jobs must be a list of JSON objects."}
+
     eligibility = verify_source_eligibility(source_name)
     if not eligibility["eligible"]:
         return {"status": "blocked", "message": eligibility["reason"]}
@@ -110,14 +116,33 @@ def fetch_and_store_remote_jobs(db: Session, workspace_id: str) -> dict:
     
     try:
         # Fetch data from RemoteOK API
-        response = httpx.get(url, headers=headers, timeout=10.0)
-        if response.status_code != 200:
-            return {
-                "status": "error",
-                "message": f"Failed to fetch from external API. Status code: {response.status_code}"
-            }
-            
+        response = None
+        for attempt in range(1, 4):
+            try:
+                response = httpx.get(url, headers=headers, timeout=10.0)
+            except httpx.TimeoutException:
+                if attempt == 3:
+                    raise
+                time.sleep(0.5 * attempt)
+                continue
+            if response.status_code == 429 or response.status_code >= 500:
+                if attempt == 3:
+                    response.raise_for_status()
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    delay = min(5.0, max(0.0, float(retry_after))) if retry_after else 0.5 * attempt
+                except ValueError:
+                    delay = 0.5 * attempt
+                time.sleep(delay)
+                continue
+            response.raise_for_status()
+            break
+        if response is None:
+            raise httpx.TimeoutException("RemoteOK did not respond after three attempts.")
+
         data = response.json()
+        if not isinstance(data, list):
+            raise ValueError("RemoteOK returned an unexpected response format.")
         
         # RemoteOK API returns the first element as metadata, jobs start from index 1
         job_listings = data[1:] if len(data) > 1 else []
@@ -127,7 +152,7 @@ def fetch_and_store_remote_jobs(db: Session, workspace_id: str) -> dict:
 
         for job in job_listings:
             # Skip non-job entries if any
-            if not isinstance(job, dict) or "id" not in job:
+            if not isinstance(job, dict) or job.get("id") is None:
                 continue
                 
             stable_id = hashlib.sha256(

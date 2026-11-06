@@ -1,52 +1,124 @@
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
-def verify_lead_freshness_and_quality(job_lead_data: dict, confidence: float = 0.85) -> dict:
-    """
-    Enforces freshness verification, source provenance, and quality gates 
-    before a lead is marked eligible for delivery.
-    As specified in PDF Section 4.11 & 10[cite: 5, 6, 10].
-    """
-    reasons = []
-    is_eligible = True
 
-    # 1. Confidence Check (PDF Section 8 & 11)
-    if confidence < 0.70:
-        is_eligible = False
-        reasons.append("Confidence score below 0.70 threshold; marked uncertain.")
-    elif confidence < 0.90:
-        reasons.append("Confidence score between 0.70 and 0.89; requires targeted review.")
+_CLOSED_STATUSES = {"closed", "expired", "filled", "removed", "inactive"}
+_ACTIVE_STATUSES = {"active", "open", "published"}
 
-    # 2. Freshness / Posted Date Check (PDF Section 4.11)
-    posted_at_str = job_lead_data.get("posted_at")
-    if posted_at_str:
+
+def _parse_datetime(value):
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
         try:
-            posted_at = datetime.fromisoformat(posted_at_str)
-            if posted_at.tzinfo is None:
-                posted_at = posted_at.replace(tzinfo=timezone.utc)
-            
-            age_days = (datetime.now(timezone.utc) - posted_at).days
-            # Assume max permitted age is 14 days for a fresh lead
-            if age_days > 14:
-                is_eligible = False
-                reasons.append(f"Listing is stale (age: {age_days} days exceeds 14-day freshness window).")
-            else:
-                reasons.append(f"Listing freshness verified (age: {age_days} days).")
-        except Exception:
-            reasons.append("Could not parse posted date; applying cautious review status.")
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
     else:
-        reasons.append("Missing posted date timestamp; provenance incomplete.")
+        return None
 
-    # 3. Provenance & Source Evidence Check (PDF Section 4.3 & 11)
-    sources = job_lead_data.get("sources", [])
-    if not sources:
-        is_eligible = False
-        reasons.append("Missing required source provenance records.")
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
-    status = "eligible_for_delivery" if is_eligible else "excluded_or_held"
+
+def verify_lead_freshness_and_quality(
+    job_lead_data: dict,
+    confidence: float = None,
+    max_age_days: int = 14,
+) -> dict:
+    """Return a delivery decision based on source evidence, status, freshness, and confidence."""
+    reasons = []
+    now = datetime.now(timezone.utc)
+    quality_status = "eligible_for_delivery"
+
+    def hold(reason: str):
+        nonlocal quality_status
+        if quality_status == "eligible_for_delivery":
+            quality_status = "review_required"
+        reasons.append(reason)
+
+    def exclude(reason: str):
+        nonlocal quality_status
+        quality_status = "excluded"
+        reasons.append(reason)
+
+    if not isinstance(max_age_days, int) or isinstance(max_age_days, bool) or max_age_days < 1:
+        raise ValueError("max_age_days must be a positive integer.")
+
+    status = str(job_lead_data.get("status") or "unverified").strip().casefold()
+    if status in _CLOSED_STATUSES:
+        exclude(f"Listing status is '{status}'.")
+    elif status not in _ACTIVE_STATUSES:
+        hold("Listing status is not confirmed active.")
+
+    if confidence is None:
+        confidence = job_lead_data.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        hold("Extraction confidence is unavailable.")
+    elif not 0 <= confidence <= 1:
+        hold("Extraction confidence is outside the valid 0.0-1.0 range.")
+    elif confidence < 0.70:
+        hold("Extraction confidence is below 0.70; human review is required.")
+    elif confidence < 0.90:
+        hold("Extraction confidence is below 0.90; targeted review is required.")
+
+    posted_at = _parse_datetime(job_lead_data.get("posted_at"))
+    if posted_at is None:
+        hold("Posting date is missing or invalid; freshness cannot be verified.")
+    else:
+        age = now - posted_at
+        if age < timedelta(days=-1):
+            hold("Posting date is in the future.")
+        elif age > timedelta(days=max_age_days):
+            exclude(f"Listing is older than the {max_age_days}-day freshness window.")
+        else:
+            reasons.append(f"Posting date is within the {max_age_days}-day freshness window.")
+
+    sources = job_lead_data.get("sources")
+    source_count = job_lead_data.get("sources_count", 0)
+    if not sources and (not isinstance(source_count, int) or source_count < 1):
+        hold("Source provenance is missing.")
+
+    if not job_lead_data.get("title"):
+        hold("Job title is missing.")
+
+    criteria = job_lead_data.get("target_criteria") or {}
+    if criteria.get("remote_only"):
+        remote_policy = job_lead_data.get("remote_policy")
+        remote_policy = remote_policy.casefold() if isinstance(remote_policy, str) else ""
+        if not remote_policy:
+            hold("Remote eligibility is unknown.")
+        elif not any(term in remote_policy for term in ("remote", "distributed")):
+            exclude("The job does not meet the remote-only requirement.")
+
+    requested_countries = criteria.get("countries") or []
+    if isinstance(requested_countries, str):
+        requested_countries = [requested_countries]
+    if isinstance(criteria.get("region"), str) and criteria["region"].strip():
+        requested_countries = list(requested_countries) + [criteria["region"]]
+    allowed_countries = job_lead_data.get("allowed_countries") or []
+    if requested_countries:
+        normalized_requested = {
+            value.strip().casefold()
+            for value in requested_countries
+            if isinstance(value, str) and value.strip()
+        }
+        normalized_allowed = {
+            value.strip().casefold()
+            for value in allowed_countries
+            if isinstance(value, str) and value.strip()
+        }
+        if not normalized_allowed:
+            hold("Allowed work countries are unknown.")
+        elif not (
+            normalized_requested & normalized_allowed
+            or {"global", "worldwide"} & normalized_allowed
+        ):
+            exclude("The permitted work countries do not match the requested geography.")
 
     return {
-        "status": status,
-        "is_eligible": is_eligible,
+        "status": quality_status,
+        "is_eligible": quality_status == "eligible_for_delivery",
         "quality_rationale": reasons,
-        "verified_at": datetime.now(timezone.utc).isoformat()
+        "verified_at": now.isoformat(),
     }

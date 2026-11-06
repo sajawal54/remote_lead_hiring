@@ -15,7 +15,7 @@ def initialize_workflow_execution(db: Session, workspace_id: str, criteria: dict
     execution = WorkflowExecutionModel(
         id=workflow_id,
         workspace_id=workspace_id,
-        status="pending",
+        status="queued",
         stage="source_eligibility",
         criteria=criteria,
         created_at=datetime.now(timezone.utc),

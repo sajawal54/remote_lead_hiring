@@ -13,8 +13,8 @@ def resolve_and_associate_company(
     normalized_company_name: str,
     domain: str = None,
 ) -> dict:
-    clean_name = normalized_company_name.strip() if normalized_company_name else ""
-    clean_domain = domain.strip().lower() if domain else None
+    clean_name = normalized_company_name.strip() if isinstance(normalized_company_name, str) else ""
+    clean_domain = domain.strip().lower() if isinstance(domain, str) and domain.strip() else None
     company = None
 
     if clean_domain:
@@ -24,10 +24,22 @@ def resolve_and_associate_company(
         ).first()
 
     if not company and clean_name and clean_name.casefold() != "unknown company":
-        company = db.query(CompanyModel).filter(
+        companies = db.query(CompanyModel).filter(
             CompanyModel.workspace_id == workspace_id,
-            func.lower(CompanyModel.normalized_name) == clean_name.lower(),
-        ).first()
+        ).all()
+        company = next(
+            (
+                candidate
+                for candidate in companies
+                if candidate.normalized_name.casefold() == clean_name.casefold()
+                or clean_name.casefold() in {
+                    alias.casefold()
+                    for alias in (candidate.aliases or [])
+                    if isinstance(alias, str)
+                }
+            ),
+            None,
+        )
 
     if not company and clean_name and clean_name.casefold() != "unknown company":
         company = CompanyModel(
@@ -39,6 +51,14 @@ def resolve_and_associate_company(
         )
         db.add(company)
         db.flush()
+    elif company:
+        if clean_domain and not company.domain:
+            company.domain = clean_domain
+        if clean_name and clean_name.casefold() != company.normalized_name.casefold():
+            aliases = list(company.aliases or [])
+            if clean_name not in aliases:
+                aliases.append(clean_name)
+            company.aliases = aliases
 
     job_lead = db.query(JobLeadModel).filter(
         JobLeadModel.job_id == job_id,

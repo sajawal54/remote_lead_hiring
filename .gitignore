@@ -1,6 +1,7 @@
 venv/
 __pycache__/
 *.db
+generated_exports/
 .env
 .DS_Store
 .vscode/

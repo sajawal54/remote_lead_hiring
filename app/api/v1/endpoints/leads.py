@@ -1,69 +1,152 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+
 from app.core.database import get_db
 from app.core.security import verify_access_token
-from app.models.models import JobLeadModel
+from app.models.models import JobLeadModel, JobSourceModel, RawSourceRecordModel
 
 router = APIRouter(prefix="/leads", tags=["Job Leads"])
 
+
 @router.get("")
 def get_workspace_leads(
+    min_score: int = Query(default=0, ge=0, le=100),
+    region: str | None = None,
+    status: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     current_user: dict = Depends(verify_access_token),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """
-    Retrieves all processed and scored job leads for the authenticated workspace.
-    PDF Section 8 & 9 (Lead Delivery & Intelligence).
-    """
-    leads = db.query(JobLeadModel).filter(
-        JobLeadModel.workspace_id == current_user["workspace_id"]
-    ).all()
+    """Return paginated workspace leads with scores and source provenance."""
+    query = db.query(JobLeadModel).filter(
+        JobLeadModel.workspace_id == current_user["workspace_id"],
+        JobLeadModel.total_score >= min_score,
+    )
+    if status:
+        query = query.filter(JobLeadModel.status == status.strip().casefold())
+    if region:
+        query = query.filter(JobLeadModel.location.ilike(f"%{region.strip()}%"))
+
+    total = query.count()
+    leads = (
+        query.order_by(JobLeadModel.total_score.desc(), JobLeadModel.posted_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    lead_ids = [lead.job_id for lead in leads]
+    source_links = (
+        db.query(JobSourceModel)
+        .filter(
+            JobSourceModel.workspace_id == current_user["workspace_id"],
+            JobSourceModel.job_id.in_(lead_ids),
+        )
+        .all()
+        if lead_ids
+        else []
+    )
+    provenance = {}
+    for source in source_links:
+        provenance.setdefault(source.job_id, []).append(
+            {
+                "source_name": source.source_name,
+                "source_url": source.source_url,
+                "first_seen_at": source.first_seen_at,
+                "last_seen_at": source.last_seen_at,
+            }
+        )
 
     return {
         "status": "success",
         "workspace_id": current_user["workspace_id"],
-        "total_leads": len(leads),
+        "total_leads": total,
+        "limit": limit,
+        "offset": offset,
         "leads": [
             {
-                "id": lead.id,
+                "id": lead.job_id,
                 "title": lead.title,
+                "company_name": lead.company_name,
                 "location": lead.location,
                 "remote_policy": lead.remote_policy,
-                "score": lead.score,
+                "score": lead.total_score,
+                "score_breakdown": lead.score_breakdown or {},
                 "passed_threshold": lead.passed_threshold,
-                "posted_at": lead.posted_at
+                "status": lead.status,
+                "posted_at": lead.posted_at,
+                "sources": provenance.get(lead.job_id, []),
             }
             for lead in leads
-        ]
+        ],
     }
+
 
 @router.get("/{lead_id}")
 def get_lead_detail(
     lead_id: str,
     current_user: dict = Depends(verify_access_token),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """
-    Retrieves full details and score breakdown for a specific job lead.
-    """
-    lead = db.query(JobLeadModel).filter(
-        JobLeadModel.job_id == lead_id,
-        JobLeadModel.workspace_id == current_user["workspace_id"]
-    ).first()
-
+    """Return details, score components, extraction evidence, and source provenance."""
+    lead = (
+        db.query(JobLeadModel)
+        .filter(
+            JobLeadModel.job_id == lead_id,
+            JobLeadModel.workspace_id == current_user["workspace_id"],
+        )
+        .first()
+    )
     if not lead:
         raise HTTPException(status_code=404, detail="Job lead not found.")
 
+    sources = (
+        db.query(JobSourceModel, RawSourceRecordModel)
+        .join(
+            RawSourceRecordModel,
+            RawSourceRecordModel.record_id == JobSourceModel.record_id,
+        )
+        .filter(
+            JobSourceModel.workspace_id == current_user["workspace_id"],
+            JobSourceModel.job_id == lead.job_id,
+        )
+        .all()
+    )
+    extraction = lead.extraction or {}
     return {
         "status": "success",
         "lead": {
-            "id": lead.id,
+            "id": lead.job_id,
+            "company_name": lead.company_name,
             "title": lead.title,
             "description": lead.description,
             "location": lead.location,
             "remote_policy": lead.remote_policy,
-            "score": lead.score,
+            "allowed_countries": lead.allowed_countries or [],
+            "technologies": lead.technologies or [],
+            "salary": lead.salary,
+            "score": lead.total_score,
+            "score_breakdown": lead.score_breakdown or {},
             "passed_threshold": lead.passed_threshold,
-            "verified_at": lead.verified_at
-        }
+            "status": lead.status,
+            "review_notes": lead.review_notes,
+            "posted_at": lead.posted_at,
+            "verified_at": lead.verified_at,
+            "last_verified_at": lead.last_verified_at,
+            "canonical_url": lead.canonical_url,
+            "sources_count": lead.sources_count or len(sources),
+            "sources": [
+                {
+                    "source_name": source.source_name,
+                    "source_url": source.source_url,
+                    "first_seen_at": source.first_seen_at,
+                    "last_seen_at": source.last_seen_at,
+                    "fetched_at": record.fetched_at,
+                }
+                for source, record in sources
+            ],
+            "extraction": extraction,
+            "quality_gate": extraction.get("quality_gate"),
+            "company_signals": extraction.get("company_signals"),
+        },
     }

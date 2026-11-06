@@ -131,6 +131,19 @@ class WorkflowExecutionModel(Base):
     workspace = relationship("WorkspaceModel", back_populates="workflows")
 
 
+class WorkflowStepModel(Base):
+    __tablename__ = "workflow_steps"
+
+    step_id = Column(String, primary_key=True, default=lambda: "step_" + str(uuid.uuid4())[:12])
+    workspace_id = Column(String, ForeignKey("workspaces.workspace_id"), nullable=False)
+    workflow_id = Column(String, ForeignKey("workflow_executions.workflow_id"), nullable=False)
+    stage = Column(String, nullable=False)
+    status = Column(String, nullable=False)
+    attempt = Column(Integer, nullable=False, default=1)
+    decision_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class JobSourceModel(Base):
     __tablename__ = "job_sources"
     __table_args__ = (
@@ -145,3 +158,40 @@ class JobSourceModel(Base):
     source_url = Column(String, nullable=True)
     first_seen_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_seen_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class LeadEmbeddingModel(Base):
+    __tablename__ = "lead_embeddings"
+
+    job_id = Column(String, ForeignKey("job_leads.job_id"), primary_key=True)
+    workspace_id = Column(String, ForeignKey("workspaces.workspace_id"), nullable=False)
+    model = Column(String, nullable=False)
+    vector = Column(JSON, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    content_hash = Column(String, nullable=False, default="")
+
+
+class ExportModel(Base):
+    __tablename__ = "exports"
+
+    export_id = Column(String, primary_key=True)
+    workspace_id = Column(String, ForeignKey("workspaces.workspace_id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.user_id"), nullable=False)
+    file_name = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)
+    format = Column(String, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class AuditEventModel(Base):
+    __tablename__ = "audit_events"
+
+    event_id = Column(String, primary_key=True, default=lambda: "evt_" + str(uuid.uuid4())[:12])
+    workspace_id = Column(String, ForeignKey("workspaces.workspace_id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.user_id"), nullable=True)
+    action = Column(String, nullable=False)
+    resource_type = Column(String, nullable=False)
+    resource_id = Column(String, nullable=True)
+    details = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
