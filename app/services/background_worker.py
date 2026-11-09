@@ -160,6 +160,7 @@ def process_raw_records_pipeline(db: Session, workflow_id: str, workspace_id: st
                 execution.stage = "ai_extraction"
                 db.commit()
                 extraction = None
+                extraction_failure_reason = None
                 for attempt in range(1, 3):
                     result = extract_job_details_with_gemini(normalized["description"])
                     if (
@@ -174,6 +175,8 @@ def process_raw_records_pipeline(db: Session, workflow_id: str, workspace_id: st
                         break
                     if attempt == 2:
                         reason = result.get("message") or result.get("error") or "Extraction failed."
+                        extraction = result
+                        extraction_failure_reason = reason
                         _record_step(
                             db, workspace_id, workflow_id, "ai_extraction",
                             "review_required", reason, attempt,
@@ -184,13 +187,16 @@ def process_raw_records_pipeline(db: Session, workflow_id: str, workspace_id: st
                             "retrying", "Retrying a failed extraction.", attempt,
                         )
                         time.sleep(0.25)
-                if extraction is None:
-                    counts["failed"] += 1
-                    continue
             else:
+                extraction_failure_reason = "Description is missing; AI extraction was skipped."
                 _record_step(
                     db, workspace_id, workflow_id, "ai_extraction",
-                    "review_required", "Description is missing; AI extraction was skipped.",
+                    "review_required", extraction_failure_reason,
+                )
+
+            if extraction is None:
+                raise RuntimeError(
+                    f"AI extraction produced no result for raw record {raw_record.record_id}."
                 )
 
             extracted_data = extraction.get("extraction") or {}
@@ -343,10 +349,15 @@ def process_raw_records_pipeline(db: Session, workflow_id: str, workspace_id: st
                     **normalized,
                     "status": lead.status,
                     "sources_count": len(source_links),
+                    "target_criteria": criteria,
                 },
                 confidence=normalized.get("confidence"),
                 max_age_days=criteria.get("max_age_days", 14),
             )
+            if extraction_failure_reason and quality_result["status"] != "excluded":
+                quality_result["status"] = "review_required"
+                quality_result["is_eligible"] = False
+                quality_result["quality_rationale"].append(extraction_failure_reason)
             if lead_result["status"] == "review_required":
                 quality_result["is_eligible"] = False
                 quality_result["status"] = "review_required"

@@ -15,9 +15,16 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.v1.api import api_router
 from app.core.database import Base, get_db
-from app.models.models import WorkflowExecutionModel
+from app.models.models import (
+    AuditEventModel,
+    JobLeadModel,
+    RawSourceRecordModel,
+    WorkflowExecutionModel,
+)
 from app.services import background_worker
+from app.services.orchestrator import initialize_workflow_execution
 import app.api.v1.endpoints.exports as exports_endpoint
+from app.services.quality_gate import verify_lead_freshness_and_quality
 
 
 class ProjectApiTests(unittest.IsolatedAsyncioTestCase):
@@ -71,6 +78,192 @@ class ProjectApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200, response.text)
         result = response.json()
         return result["workspace_id"], result["access_token"]
+
+    def test_quality_gate_excludes_job_that_misses_requested_criteria(self):
+        result = verify_lead_freshness_and_quality(
+            {
+                "title": "Office Engineer",
+                "status": "active",
+                "posted_at": datetime.now(timezone.utc).isoformat(),
+                "confidence": 0.99,
+                "sources_count": 1,
+                "remote_policy": "on-site",
+                "allowed_countries": ["United States"],
+                "target_criteria": {
+                    "remote_only": True,
+                    "countries": ["Pakistan"],
+                },
+            },
+            confidence=0.99,
+            max_age_days=14,
+        )
+
+        self.assertEqual(result["status"], "excluded")
+        self.assertFalse(result["is_eligible"])
+
+    async def test_failed_ai_extraction_creates_reviewable_lead(self):
+        workspace_id, _ = await self.signup("review@example.com", "Review Team")
+        db = self.session_factory()
+        try:
+            db.add(
+                RawSourceRecordModel(
+                    record_id="raw_extraction_failure",
+                    workspace_id=workspace_id,
+                    source_name="csv_upload",
+                    source_url="test.csv",
+                    fetched_at=datetime.now(timezone.utc),
+                    raw_payload={
+                        "title": "Python Engineer",
+                        "company": "Example Inc",
+                        "location": "Remote",
+                        "description": "Build Python services.",
+                        "url": "https://example.com/jobs/failure",
+                        "posted_at": datetime.now(timezone.utc).isoformat(),
+                        "status": "active",
+                    },
+                )
+            )
+            db.commit()
+            workflow = initialize_workflow_execution(
+                db,
+                workspace_id,
+                {"source_names": ["csv_upload"], "max_age_days": 14},
+            )
+
+            with (
+                patch.object(
+                    background_worker,
+                    "extract_job_details_with_gemini",
+                    return_value={
+                        "status": "failed",
+                        "message": "Test extraction failure.",
+                    },
+                ),
+                patch.object(background_worker.time, "sleep"),
+                patch.object(
+                    background_worker,
+                    "generate_lead_embedding",
+                    return_value={
+                        "status": "degraded",
+                        "embedding_metadata": {"status": "unavailable"},
+                        "message": "Embeddings disabled for test.",
+                    },
+                ),
+            ):
+                background_worker.process_raw_records_pipeline(
+                    db,
+                    workflow["workflow_id"],
+                    workspace_id,
+                )
+
+            execution = db.query(WorkflowExecutionModel).filter_by(
+                id=workflow["workflow_id"],
+                workspace_id=workspace_id,
+            ).one()
+            lead = db.query(JobLeadModel).filter_by(
+                workspace_id=workspace_id,
+                title="Python Engineer",
+            ).one()
+            self.assertEqual(execution.status, "review_required")
+            self.assertEqual(lead.status, "review_required")
+            self.assertIn("Test extraction failure.", lead.review_notes)
+            self.assertEqual(
+                lead.extraction["quality_gate"]["status"],
+                "review_required",
+            )
+        finally:
+            db.close()
+
+    async def test_review_endpoint_approves_and_rejects_pending_leads(self):
+        workspace_id, token = await self.signup("reviewer@example.com", "Reviewers")
+        db = self.session_factory()
+        try:
+            db.add_all(
+                [
+                    JobLeadModel(
+                        job_id="job_approve",
+                        workspace_id=workspace_id,
+                        company_name="Approve Co",
+                        title="Approve Engineer",
+                        location="Remote",
+                        status="review_required",
+                        extraction={
+                            "quality_gate": {
+                                "status": "review_required",
+                                "is_eligible": False,
+                            }
+                        },
+                    ),
+                    JobLeadModel(
+                        job_id="job_reject",
+                        workspace_id=workspace_id,
+                        company_name="Reject Co",
+                        title="Reject Engineer",
+                        location="Remote",
+                        status="review_required",
+                        extraction={
+                            "quality_gate": {
+                                "status": "review_required",
+                                "is_eligible": False,
+                            }
+                        },
+                    ),
+                    JobLeadModel(
+                        job_id="job_excluded",
+                        workspace_id=workspace_id,
+                        company_name="Excluded Co",
+                        title="Excluded Engineer",
+                        location="On-site",
+                        status="review_required",
+                        extraction={
+                            "quality_gate": {
+                                "status": "excluded",
+                                "is_eligible": False,
+                            }
+                        },
+                    ),
+                ]
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        headers = {"Authorization": f"Bearer {token}"}
+        approved = await self.client.patch(
+            "/api/v1/leads/job_approve/review",
+            headers=headers,
+            json={"action": "approve", "notes": "Checked listing details."},
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+        self.assertEqual(approved.json()["review_status"], "active")
+
+        rejected = await self.client.patch(
+            "/api/v1/leads/job_reject/review",
+            headers=headers,
+            json={"action": "reject"},
+        )
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+        self.assertEqual(rejected.json()["review_status"], "excluded")
+
+        excluded_approval = await self.client.patch(
+            "/api/v1/leads/job_excluded/review",
+            headers=headers,
+            json={"action": "approve"},
+        )
+        self.assertEqual(excluded_approval.status_code, 409)
+
+        db = self.session_factory()
+        try:
+            events = db.query(AuditEventModel).filter(
+                AuditEventModel.workspace_id == workspace_id,
+                AuditEventModel.resource_type == "job_lead",
+            ).all()
+            self.assertEqual(
+                {event.action for event in events},
+                {"lead.review.approved", "lead.review.rejected"},
+            )
+        finally:
+            db.close()
 
     async def test_signup_signin_and_authentication(self):
         workspace_id, token = await self.signup("member@example.com", "Example")
