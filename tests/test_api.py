@@ -453,6 +453,5 @@ class ProjectApiTests(unittest.IsolatedAsyncioTestCase):
         finally:
             db.close()
 
-
 if __name__ == "__main__":
     unittest.main()
