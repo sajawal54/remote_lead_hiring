@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.models.models import WorkflowExecutionModel
 
 
-def initialize_workflow_execution(db: Session, workspace_id: str, criteria: dict) -> dict:
+def initialize_workflow_execution(db: Session, workspace_id: str, criteria: dict) -> dict:  
     """
     Initializes a durable workflow execution record with workspace scope.
     As specified in PDF Section 5 (Orchestration state and execution records).
